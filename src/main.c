@@ -39,37 +39,17 @@
 
 // TIM2 clock prescaler
 #define myTIM2_PRESCALER (uint16_t)0x0000
-// LCD clock prescaler
-#define myLCD_PRESCALER (uint16_t)((SystemCoreClock - 1) / 1000)
 
 // Maximum possible setting before overflow
 #define myTIM2_PERIOD (uint32_t)0xFFFFFFFF
-#define myLCD_UPDATE_DELAY (uint32_t)300
-
-// Define Max Values for DAC because 12 bits
-#define MAX_DAC (float)0xFFF
-
-// If we write MAX_DAC to PA4, the maximum possible voltage we can see is 2.95.
-#define MAX_DAC_VOLTAGE 2.95
-
-// Define MAX Value for ADC because it has 12 bits.
-#define MAX_ADC (float)0xFFF
-
-// Define Max Resistance... PBMCUSLK uses a 5k pot
-#define MAX_RESISTANCE 5000
-
-// Define Deadband voltage for opto
-#define OPTO_DB_VOLTAGE 1.0
 
 void myGPIOA_Init(void);
 void myTIM2_Init(void);
 void myEXTI_Init(void);
-void myTIM16_Init(void);
 void myADC_Init(void);
 void myDAC_Init(void);
 void startPotWatcher(void);
 uint32_t potADCValue(void);
-uint32_t mapDac(uint32_t dac);
 
 // Your global variables...
 float resistance = 0.0;
@@ -84,7 +64,6 @@ int main(int argc, char* argv[]) {
   myTIM2_Init();
   myEXTI_Init();
   myLCD_Init();
-  myTIM16_Init();
 
   // Start watching the values from the potentiometer and altering the frequency
   startPotWatcher();
@@ -99,16 +78,17 @@ void startPotWatcher() {
     // Get the digitally converted resistance across potentiometer
     adcValue = potADCValue();
 
-    // Ensures that any changes to the potentiometers resistance corresponds
-    // in a changed frequency
-    uint32_t timerControlDACValue = mapDac(adcValue);
-
     // Write the 12 bits to PA4
-    DAC->DHR12R1 = timerControlDACValue;
+    DAC->DHR12R1 = adcValue;
 
-    // normalize the resistance across the potentiometer
-    normalizedPotADC = (((float)adcValue) / MAX_ADC);
-    resistance = normalizedPotADC * MAX_RESISTANCE;
+    //Normalize the resistance to the range of voltages(1.1 to 3.3)
+    //to the default between 0 and 2^12 because of register size.
+    //calculation = (5000/4096)
+    resistance = adcValue*1.221;
+
+    setDelay(300);
+    updateValues(1, frequency);
+    updateValues(2, resistance);
   }
 }
 
@@ -173,36 +153,6 @@ void myEXTI_Init() {
   NVIC_EnableIRQ(EXTI0_1_IRQn);
 }
 
-void myTIM16_Init() {
-  // Enable clock for TIM16 peripheral
-  RCC->APB2ENR |= RCC_APB2ENR_TIM16EN;
-
-  // Configure TIM16: buffer auto-reload, count up, stop on overflow,
-  // enable update events, interrupt on overflow only
-  TIM16->CR1 = ((uint16_t)0x008C);
-
-  // Set clock prescaler value
-  TIM16->PSC = myLCD_PRESCALER;
-
-  // Set auto-reloaded delay
-  TIM16->ARR = myLCD_UPDATE_DELAY;
-
-  // Update timer registers
-  TIM16->EGR = ((uint16_t)0x0001);
-
-  // Assign TIM16 interrupt priority = 1 in NVIC
-  NVIC_SetPriority(TIM16_IRQn, 1);
-
-  // Enable TIM16 interrupts in NVIC
-  NVIC_EnableIRQ(TIM16_IRQn);
-
-  // Enable update interrupt generation
-  TIM16->DIER |= TIM_DIER_UIE;
-
-  // Start timer
-  TIM16->CR1 |= TIM_CR1_CEN;
-}
-
 void myDAC_Init() {
   // Enable clock
   RCC->APB1ENR |= RCC_APB1ENR_DACEN;
@@ -248,23 +198,6 @@ uint32_t potADCValue() {
   return potADCValue;
 }
 
-// Ensures that any changes to the resistance across pot result
-// in a change to the frequency in the optocoupler.
-uint32_t mapDac(uint32_t dac) {
-  // Map the DAC value to the optocouplers min value
-  float normalized = dac / MAX_DAC;
-  float voltageOutMultiplier = MAX_DAC_VOLTAGE - OPTO_DB_VOLTAGE;
-  float voltageOut = (normalized * voltageOutMultiplier) + OPTO_DB_VOLTAGE;
-
-  // convert the voltage value back to a DAC level
-  float normVoltageOut = voltageOut / MAX_DAC_VOLTAGE;
-  float outputDACValue = normVoltageOut * MAX_DAC;
-
-  uint32_t timerDACValue = (uint32_t)outputDACValue;
-
-  return timerDACValue;
-}
-
 // Handler for timer overflow between two consecutive rising edges
 void TIM2_IRQHandler() {
   // Make sure the flag is actually set
@@ -276,21 +209,6 @@ void TIM2_IRQHandler() {
 
     // Restart timer
     TIM2->CR1 |= TIM_CR1_CEN;
-  }
-}
-
-// Handler for writing to lcd
-void TIM16_IRQHandler() {
-  // Make sure the flag is actually set
-  if ((TIM16->SR & TIM_SR_UIF) != 0) {
-    updateValues(1, frequency);
-    updateValues(2, resistance);
-
-    // Clear interrupt flag
-    TIM16->SR &= ~(TIM_SR_UIF);
-
-    // Restart timer
-    TIM16->CR1 |= TIM_CR1_CEN;
   }
 }
 
